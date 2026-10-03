@@ -38,18 +38,11 @@ def get_token():
 
 
 def upload_image(token, path):
-    """上传图片到素材库, 返回微信 URL"""
+    """上传图片到素材库, 返回微信 URL(正文插图)"""
     boundary = "----wechat-boundary"
     fname = os.path.basename(path)
     with open(path, "rb") as f:
         content = f.read()
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="media"\r\n\r\n'.encode()
-        + content
-        + f"\r\n--{boundary}--\r\n".encode()
-    )
-    # 重新拼接正确
     body = (
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"media\"; filename=\"{fname}\"\r\n"
         f"Content-Type: image/jpeg\r\n\r\n".encode()
@@ -66,6 +59,30 @@ def upload_image(token, path):
     if "url" not in d:
         sys.exit(f"图片上传失败: {d}")
     return d["url"]
+
+
+def upload_permanent_image(token, path):
+    """上传永久图片素材, 返回 media_id(用于封面 thumb_media_id)"""
+    boundary = "----wechat-boundary"
+    fname = os.path.basename(path)
+    with open(path, "rb") as f:
+        content = f.read()
+    body = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"media\"; filename=\"{fname}\"\r\n"
+        f"Content-Type: image/jpeg\r\n\r\n".encode()
+        + content
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    req = urllib.request.Request(
+        f"https://api.weixin.qq.com/cgi-bin/material/add_material?access_token={token}&type=image",
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with urllib.request.urlopen(req, timeout=60) as r:
+        d = json.loads(r.read().decode())
+    if "media_id" not in d:
+        sys.exit(f"封面(永久素材)上传失败: {d}")
+    return d["media_id"]
 
 
 CSS = "color:#333;font-size:15px;line-height:1.8;letter-spacing:0.5px;"
@@ -202,10 +219,25 @@ def main():
     body_html = md_to_html(md, token)
     content = f'<section style="{CSS}">{body_html}</section>'
 
-    d = api(f"cgi-bin/draft/add", {"articles": [
-        {"title": title, "author": "宝带熙岸", "digest": digest, "content": content,
-         "content_source_url": "", "need_open_comment": 0, "only_fans_can_comment": 0}
-    ]}, token)
+    # 封面: 找 assets/cover.jpg 或文章同目录 cover.jpg -> 永久素材 -> thumb_media_id
+    thumb_id = ""
+    for cand in ("assets/cover.jpg", "cover.jpg"):
+        p = cand
+        if not os.path.exists(p):
+            p = os.path.join(os.path.dirname(md_path), cand)
+        if os.path.exists(p):
+            thumb_id = upload_permanent_image(token, p)
+            print(f"[ok] 封面已上传 media_id={thumb_id}")
+            break
+    if not thumb_id:
+        print("[warn] 未找到封面 assets/cover.jpg, 草稿可能因缺 thumb_media_id 失败(40007)")
+
+    art = {"title": title, "author": "宝带熙岸", "digest": digest, "content": content,
+           "content_source_url": "", "need_open_comment": 0, "only_fans_can_comment": 0}
+    if thumb_id:
+        art["thumb_media_id"] = thumb_id
+
+    d = api(f"cgi-bin/draft/add", {"articles": [art]}, token)
     if "media_id" in d:
         print(f"[ok] 草稿创建成功 media_id={d['media_id']} 标题=《{title}》")
         print("请到公众号后台草稿箱群发")
