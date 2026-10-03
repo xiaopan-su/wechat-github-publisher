@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "articles/*.md"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,22 +16,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 5
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: 打印出口IP(首次加入IP白名单用)
-        run: curl -s ifconfig.me | tee ip.txt && cat ip.txt
+      - name: 打印出口IP
+        run: |
+          echo "Actions出口IP, 首次需加入公众号IP白名单: $(curl -s -m 10 ifconfig.me)"
 
-      - name: 检测新增/修改的文章
+      - name: 检测待发布文章
         id: changed
         run: |
-          FILES=$(git diff --name-only --diff-filter=d HEAD~1 2>/dev/null -- 'articles/*.md' || git show --name-only --diff-filter=d HEAD -- 'articles/*.md' | grep '^articles/')
-          echo "files=$FILES"
+          EVENT="${{ github.event_name }}"
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            FILES=$(ls articles/*.md 2>/dev/null || true)
+          else
+            FILES=$(git diff --name-only HEAD~1 HEAD -- 'articles/*.md' 2>/dev/null || true)
+            [ -z "$FILES" ] && FILES=$(ls articles/*.md 2>/dev/null || true)
+          fi
           echo "$FILES" > /tmp/files.txt
-          echo "count=$(echo "$FILES" | grep -c . || echo 0)" >> "$GITHUB_OUTPUT"
+          echo "=== 待发布 ==="
+          cat /tmp/files.txt
+          N=$(grep -c . /tmp/files.txt || true)
+          echo "count=$N" >> "$GITHUB_OUTPUT"
 
       - name: 发布到草稿箱
         if: steps.changed.outputs.count != '0'
@@ -38,8 +48,11 @@ jobs:
           WECHAT_APPID: ${{ secrets.WECHAT_APPID }}
           WECHAT_APPSECRET: ${{ secrets.WECHAT_APPSECRET }}
         run: |
+          set -e
           while IFS= read -r f; do
             [ -z "$f" ] && continue
+            [ -f "$f" ] || continue
             echo "== 发布 $f =="
             python scripts/publish_wechat.py "$f"
           done < /tmp/files.txt
+          echo "=== 完成, 去公众号后台草稿箱群发 ==="
